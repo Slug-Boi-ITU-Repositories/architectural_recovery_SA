@@ -1,3 +1,6 @@
+# Most of this code is taken from the provided code from Mircea Lungu in our Software Architecture class
+# https://architecture-recovery.github.io/3_EvolutionaryAnalysis
+
 from pydriller import Repository
 from git import Repo
 import os
