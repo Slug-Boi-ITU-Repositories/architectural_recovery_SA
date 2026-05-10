@@ -1,3 +1,5 @@
 archlens/
 .venv/
 .direnv/
+churn/golangci-lint
+.python_packages
