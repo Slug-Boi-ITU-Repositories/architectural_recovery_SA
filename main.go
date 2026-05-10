@@ -19,7 +19,6 @@ type Package struct {
 	Name       string   `json:"Name"`
 	Module     *Module  `json:"Module"`
 	Imports    []string `json:"Imports"`
-	Standard   bool     `json:"Standard"`
 	Dir        string   `json:"Dir"`
 	GoFiles    []string `json:"GoFiles"`
 }
@@ -51,7 +50,6 @@ func main() {
 	dir := flag.String("dir", ".", "path to Go module root")
 	out := flag.String("out", "depgraph.html", "output HTML file")
 	maxDepth := flag.Int("depth", 0, "max import depth (0 = unlimited)")
-	noStdlib := flag.Bool("no-stdlib", false, "exclude standard library packages")
 	flag.Parse()
 
 	absDir, err := filepath.Abs(*dir)
@@ -87,7 +85,7 @@ func main() {
 		}
 	}
 
-	graph := buildGraph(pkgs, modulePath, *noStdlib, *maxDepth)
+	graph := buildGraph(pkgs, modulePath, *maxDepth)
 	fmt.Fprintf(os.Stderr, "Graph: %d nodes, %d edges\n", len(graph.Nodes), len(graph.Edges))
 
 	if err := renderHTML(graph, modulePath, *out); err != nil {
@@ -106,16 +104,21 @@ func getModulePath(dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// listPackages returns a map of ImportPath -> *Package for easy mutation.
+// listPackages returns a map of ImportPath -> *Package for module packages only.
+// Only direct imports within the module are used as edges.
 func listPackages(dir string) (map[string]*Package, error) {
-	cmd := exec.Command("go", "list", "-json", "-deps", "./...")
+	return runGoList(dir, "./...")
+}
+
+func runGoList(dir string, args ...string) (map[string]*Package, error) {
+	cmdArgs := append([]string{"list", "-json"}, args...)
+	cmd := exec.Command("go", cmdArgs...)
 	cmd.Dir = dir
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("go list: %w", err)
+		return nil, fmt.Errorf("go list %v: %w", args, err)
 	}
-
 	pkgs := make(map[string]*Package)
 	dec := json.NewDecoder(strings.NewReader(string(out)))
 	for dec.More() {
@@ -128,7 +131,7 @@ func listPackages(dir string) (map[string]*Package, error) {
 	return pkgs, nil
 }
 
-func buildGraph(pkgs map[string]*Package, modulePath string, noStdlib bool, maxDepth int) Graph {
+func buildGraph(pkgs map[string]*Package, modulePath string, maxDepth int) Graph {
 	// Collect reachable packages up to maxDepth using BFS
 	included := make(map[string]bool)
 	if maxDepth > 0 {
@@ -173,41 +176,17 @@ func buildGraph(pkgs map[string]*Package, modulePath string, noStdlib bool, maxD
 		}
 		nodeSet[path] = true
 
-		kind := "external"
-		if p != nil && p.Standard {
-			kind = "stdlib"
-		} else if strings.HasPrefix(path, modulePath) {
-			kind = "internal"
-		}
-
-		mod := ""
-		if p != nil && p.Module != nil {
-			mod = p.Module.Path
-		} else if kind == "external" {
-			parts := strings.Split(path, "/")
-			if len(parts) >= 3 && strings.Contains(parts[0], ".") {
-				mod = strings.Join(parts[:3], "/")
-			} else {
-				mod = parts[0]
-			}
-		}
-
-		label := path
-		if kind == "internal" {
-			label = strings.TrimPrefix(path, modulePath+"/")
-			if label == modulePath {
-				label = "(root)"
-			}
-		} else {
-			parts := strings.Split(path, "/")
-			label = parts[len(parts)-1]
+		label := strings.TrimPrefix(path, modulePath+"/")
+		label = strings.TrimPrefix(label, "pkg/")
+		if label == modulePath {
+			label = "(root)"
 		}
 
 		nodes = append(nodes, Node{
 			ID:       path,
 			Label:    label,
-			Kind:     kind,
-			Module:   mod,
+			Kind:     "internal",
+			Module:   modulePath,
 			FullPath: path,
 			Methods:  countExported(p),
 		})
@@ -215,9 +194,6 @@ func buildGraph(pkgs map[string]*Package, modulePath string, noStdlib bool, maxD
 
 	for path, p := range pkgs {
 		if !included[path] {
-			continue
-		}
-		if noStdlib && p.Standard {
 			continue
 		}
 		addNode(path, p)
@@ -228,9 +204,6 @@ func buildGraph(pkgs map[string]*Package, modulePath string, noStdlib bool, maxD
 			}
 			dep, ok := pkgs[imp]
 			if !ok {
-				continue
-			}
-			if noStdlib && dep.Standard {
 				continue
 			}
 			addNode(imp, dep)
@@ -308,11 +281,7 @@ const htmlTemplate = `<!DOCTYPE html>
   #controls label { font-size: 12px; color: #8890a8; display: flex; align-items: center; gap: 6px; cursor: pointer; }
   #controls input[type=range] { width: 80px; }
   #legend { display: flex; gap: 12px; align-items: center; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
   .dot-internal { background: #7c6fe0; }
-  .dot-external { background: #e07c5f; }
-  .dot-stdlib   { background: #5f8ea0; }
-  #legend span { font-size: 12px; color: #8890a8; }
   #info { position: absolute; top: 60px; right: 16px; width: 280px; background: #181c26; border: 1px solid #2a2f3d; border-radius: 8px; padding: 14px; font-size: 12px; display: none; z-index: 10; }
   #info h2 { font-size: 13px; font-weight: 500; margin-bottom: 8px; color: #c8cad4; word-break: break-all; }
   #info p  { color: #8890a8; margin-bottom: 4px; line-height: 1.5; }
@@ -348,16 +317,10 @@ const htmlTemplate = `<!DOCTYPE html>
 <div id="header">
   <h1>Dependency Graph</h1>
   <code>{{.Module}}</code>
-  <div id="legend">
-    <span class="dot dot-internal"></span><span>internal</span>
-    <span class="dot dot-external"></span><span>external</span>
-    <span class="dot dot-stdlib"></span><span>stdlib</span>
-  </div>
   <div id="controls">
     <button id="filter-btn">&#9776; Filter packages</button>
     <input id="search" type="text" placeholder="Search packages…">
-    <label><input type="checkbox" id="toggle-stdlib" checked> stdlib</label>
-    <label><input type="checkbox" id="toggle-external" checked> external</label>
+    <label>Depth <select id="depth-filter" style="background:#1e2436;border:1px solid #2a2f3d;color:#e2e4ea;padding:3px 6px;border-radius:4px;font-size:12px"><option value="0">all</option></select></label>
     <label>Edge weight <select id="size-by" style="background:#1e2436;border:1px solid #2a2f3d;color:#e2e4ea;padding:3px 6px;border-radius:4px;font-size:12px"><option value="out">imports</option><option value="in">imported by</option></select></label>
     <label>Link dist <input type="range" id="link-dist" min="40" max="300" value="120"></label>
     <span id="stats"></span>
@@ -384,18 +347,38 @@ const RAW_EDGES = {{.Edges}};
 
 const color = { internal: '#7c6fe0', external: '#e07c5f', stdlib: '#5f8ea0' };
 
-let showStdlib = true, showExternal = true, searchTerm = '';
-let activeFilters = new Set(); // set of prefix strings; empty = show all
+let searchTerm = '';
+let activeFilters = new Set();
+let maxDepthFilter = 0;
+
+// Populate depth dropdown from actual label depths in the data
+(function() {
+  const depths = new Set();
+  RAW_NODES.forEach(n => {
+    if (n.label === '(root)') { depths.add(0); return; }
+    depths.add(n.label.split('/').length);
+  });
+  const sel = document.getElementById('depth-filter');
+  [...depths].sort((a, b) => a - b).forEach(d => {
+    if (d === 0) return; // already have "all"
+    const opt = document.createElement('option');
+    opt.value = d;
+    opt.textContent = '<= ' + d;
+    sel.appendChild(opt);
+  });
+})();
 
 function filteredData() {
   const nodeSet = new Set();
   RAW_NODES.forEach(n => {
-    if (n.kind === 'stdlib' && !showStdlib) return;
-    if (n.kind === 'external' && !showExternal) return;
     if (searchTerm && !n.fullPath.toLowerCase().includes(searchTerm) && !n.label.toLowerCase().includes(searchTerm)) return;
-    if (activeFilters.size > 0 && n.kind === 'internal') {
+    if (activeFilters.size > 0) {
       const match = [...activeFilters].some(p => n.fullPath.startsWith(p));
       if (!match) return;
+    }
+    if (maxDepthFilter > 0) {
+      const depth = n.label === '(root)' ? 0 : n.label.split('/').length;
+      if (depth > maxDepthFilter) return;
     }
     nodeSet.add(n.id);
   });
@@ -449,7 +432,6 @@ function render() {
 
   const adj = buildAdj(nodes, edges);
 
-  // Precompute heat on each edge while IDs are still plain strings
   const sizeBy = document.getElementById('size-by').value;
   const maxDegree = Math.max(1, ...nodes.map(n =>
     sizeBy === 'in' ? (adj.inc[n.id] || []).length : (adj.out[n.id] || []).length
@@ -460,7 +442,6 @@ function render() {
     e.heat = degree / maxDegree;
   });
 
-  // Interpolate through neutral -> yellow -> orange -> red heat ramp
   function edgeColor(heat) {
     const stops = [
       [0x4a, 0x50, 0x68],
@@ -566,14 +547,9 @@ function showInfo(d, nodes, edges) {
 
 // --- Filter panel ---
 function buildPrefixTree() {
-  // Collect all unique path segments from internal nodes
-  // Group by first segment, then show sub-segments within each group
   const groups = {};
   RAW_NODES.forEach(n => {
     if (n.kind !== 'internal') return;
-    // fullPath is like "github.com/user/repo/pkg/foo/bar"
-    // We want segments relative to the module root, split by "/"
-    // Find parts after the module prefix by using the label (which is already trimmed)
     const parts = n.label === '(root)' ? [] : n.label.split('/');
     if (parts.length === 0) return;
     const top = parts[0];
@@ -584,7 +560,6 @@ function buildPrefixTree() {
 }
 
 function getFullPrefix(relPrefix) {
-  // Find a matching node to reconstruct the full import path prefix
   for (const n of RAW_NODES) {
     if (n.kind === 'internal' && (n.label === relPrefix || n.label.startsWith(relPrefix + '/'))) {
       const idx = n.fullPath.indexOf(relPrefix);
@@ -609,7 +584,6 @@ function renderFilterPanel() {
     const pills = document.createElement('div');
     pills.className = 'prefix-pills';
 
-    // Top-level pill
     const topPill = document.createElement('span');
     topPill.className = 'pill' + (activeFilters.has(fullTop) ? ' active' : '');
     topPill.textContent = top + '/…';
@@ -617,7 +591,6 @@ function renderFilterPanel() {
     topPill.addEventListener('click', toggleFilter);
     pills.appendChild(topPill);
 
-    // Sub-level pills
     [...groups[top]].sort().forEach(sub => {
       const fullSub = getFullPrefix(sub);
       const pill = document.createElement('span');
@@ -664,8 +637,9 @@ document.getElementById('filter-clear').addEventListener('click', () => {
   render();
 });
 // ---
-document.getElementById('toggle-stdlib').addEventListener('change', e => { showStdlib = e.target.checked; render(); });
-document.getElementById('toggle-external').addEventListener('change', e => { showExternal = e.target.checked; render(); });
+
+document.getElementById('depth-filter').addEventListener('change', e => { maxDepthFilter = +e.target.value; render(); });
+document.getElementById('size-by').addEventListener('change', () => render());
 document.getElementById('link-dist').addEventListener('input', () => {
   if (!sim) return;
   sim.force('link').distance(+document.getElementById('link-dist').value);
