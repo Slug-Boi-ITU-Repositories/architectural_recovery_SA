@@ -61,7 +61,7 @@ import csv
 # Write data to a csv file for use in gotool
 headers = ['filename', 'commit_count']
 
-with open('file_commits.csv', 'w', newline='', encoding='utf-8') as f:
+with open('churn.csv', 'w', newline='', encoding='utf-8') as f:
     writer = csv.writer(f)
     writer.writerow(headers)
     writer.writerows(modified_sorted_non_none)
