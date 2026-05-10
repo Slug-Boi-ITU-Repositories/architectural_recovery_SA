@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -30,10 +32,11 @@ type Module struct {
 type Node struct {
 	ID       string `json:"id"`
 	Label    string `json:"label"`
-	Kind     string `json:"kind"` // "internal", "external", "stdlib"
+	Kind     string `json:"kind"`
 	Module   string `json:"module"`
 	FullPath string `json:"fullPath"`
 	Methods  int    `json:"methods"`
+	Churn    int    `json:"churn"`
 }
 
 type Edge struct {
@@ -50,6 +53,7 @@ func main() {
 	dir := flag.String("dir", ".", "path to Go module root")
 	out := flag.String("out", "depgraph.html", "output HTML file")
 	maxDepth := flag.Int("depth", 0, "max import depth (0 = unlimited)")
+	churnFile := flag.String("churn", "", "path to churn CSV file (filename,commit_count)")
 	flag.Parse()
 
 	absDir, err := filepath.Abs(*dir)
@@ -71,6 +75,16 @@ func main() {
 	}
 	fmt.Fprintf(os.Stderr, "Found %d packages\n", len(pkgs))
 
+	churn := map[string]int{}
+	if *churnFile != "" {
+		var err error
+		churn, err = loadChurn(*churnFile)
+		if err != nil {
+			fatalf("loading churn: %v", err)
+		}
+		fmt.Fprintf(os.Stderr, "Loaded churn for %d files\n", len(churn))
+	}
+
 	// --- Modify pkgs here before the graph is built ---
 	// Remove a specific package:   delete(pkgs, "github.com/foo/bar/internal/secret")
 	// Remove all test packages:    for k, p := range pkgs { if strings.Contains(p.Name, "test") { delete(pkgs, k) } }
@@ -85,7 +99,7 @@ func main() {
 		}
 	}
 
-	graph := buildGraph(pkgs, modulePath, *maxDepth)
+	graph := buildGraph(pkgs, modulePath, *maxDepth, churn)
 	fmt.Fprintf(os.Stderr, "Graph: %d nodes, %d edges\n", len(graph.Nodes), len(graph.Edges))
 
 	if err := renderHTML(graph, modulePath, *out); err != nil {
@@ -131,7 +145,7 @@ func runGoList(dir string, args ...string) (map[string]*Package, error) {
 	return pkgs, nil
 }
 
-func buildGraph(pkgs map[string]*Package, modulePath string, maxDepth int) Graph {
+func buildGraph(pkgs map[string]*Package, modulePath string, maxDepth int, churn map[string]int) Graph {
 	// Collect reachable packages up to maxDepth using BFS
 	included := make(map[string]bool)
 	if maxDepth > 0 {
@@ -182,6 +196,14 @@ func buildGraph(pkgs map[string]*Package, modulePath string, maxDepth int) Graph
 			label = "(root)"
 		}
 
+		// Sum churn across all .go files in this package
+		pkgChurn := 0
+		if p != nil {
+			for _, f := range p.GoFiles {
+				pkgChurn += churn[filepath.Base(f)]
+			}
+		}
+
 		nodes = append(nodes, Node{
 			ID:       path,
 			Label:    label,
@@ -189,6 +211,7 @@ func buildGraph(pkgs map[string]*Package, modulePath string, maxDepth int) Graph
 			Module:   modulePath,
 			FullPath: path,
 			Methods:  countExported(p),
+			Churn:    pkgChurn,
 		})
 	}
 
@@ -241,6 +264,41 @@ func renderHTML(g Graph, modulePath, outPath string) error {
 func fatalf(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "error: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+// loadChurn reads a CSV of (filename, commit_count) and returns a map of
+// base filename -> total commits. Filenames may include paths; only the
+// base name is used as the key so it can match against GoFiles entries.
+func loadChurn(path string) (map[string]int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	r.Comment = '#'
+	records, err := r.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("parsing CSV: %w", err)
+	}
+
+	churn := make(map[string]int)
+	for _, rec := range records {
+		if len(rec) < 2 {
+			continue
+		}
+		filename := filepath.Base(strings.TrimSpace(rec[0]))
+		if filename == "filename" {
+			continue // header row
+		}
+		count, err := strconv.Atoi(strings.TrimSpace(rec[1]))
+		if err != nil {
+			continue
+		}
+		churn[filename] += count
+	}
+	return churn, nil
 }
 
 // countExported counts exported functions and methods in a package's Go source files.
@@ -338,6 +396,7 @@ const htmlTemplate = `<!DOCTYPE html>
   <p><strong>Imports:</strong> <span id="info-imports"></span> packages</p>
   <p><strong>Imported by:</strong> <span id="info-importedby"></span> packages</p>
   <p><strong>Exported funcs:</strong> <span id="info-methods"></span></p>
+  <p><strong>Churn (commits):</strong> <span id="info-churn"></span></p>
 </div>
 <svg id="graph"></svg>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
@@ -485,6 +544,15 @@ function render() {
     .on('mouseover', (e, d) => highlight(d, nodes, edges, adj))
     .on('mouseout',  () => clearHighlight());
 
+  const maxChurn = Math.max(1, ...nodes.map(n => n.churn || 0));
+
+  nodeG.append('circle')
+    .attr('r', d => d.churn ? nodeRadius(d) + (d.churn / maxChurn) * 10 : 0)
+    .attr('fill', 'none')
+    .attr('stroke', '#e0a020')
+    .attr('stroke-width', 1.5)
+    .attr('stroke-opacity', d => 0.2 + (d.churn / maxChurn) * 0.7);
+
   nodeG.append('circle')
     .attr('r', d => nodeRadius(d))
     .attr('fill', d => color[d.kind])
@@ -542,6 +610,7 @@ function showInfo(d, nodes, edges) {
   document.getElementById('info-imports').textContent = (out[d.id] || []).length;
   document.getElementById('info-importedby').textContent = (inc[d.id] || []).length;
   document.getElementById('info-methods').textContent = d.methods || 0;
+  document.getElementById('info-churn').textContent = d.churn || 0;
   document.getElementById('info').style.display = 'block';
 }
 
