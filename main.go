@@ -85,12 +85,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Loaded churn for %d files\n", len(churn))
 	}
 
-	// --- Modify pkgs here before the graph is built ---
-	// Remove a specific package:   delete(pkgs, "github.com/foo/bar/internal/secret")
-	// Remove all test packages:    for k, p := range pkgs { if strings.Contains(p.Name, "test") { delete(pkgs, k) } }
-	// Remove a whole subtree:      for k := range pkgs { if strings.HasPrefix(k, "github.com/foo/bar/cmd") { delete(pkgs, k) } }
-	// Rename a label:              pkgs["github.com/foo/bar"].Name = "myapp"
-
 	for k, p := range pkgs {
 		if strings.Contains(p.Name, "test") {
 			delete(pkgs, k)
@@ -464,8 +458,8 @@ function buildAdj(nodes, edges) {
 }
 
 function nodeRadius(d) {
-  const base = { internal: 5, external: 4, stdlib: 3 }[d.kind] || 4;
-  return base + Math.sqrt(d.methods || 0) * 1.8;
+  const base = 5;
+  return base + Math.sqrt(d.methods || 0) * 1.5 + Math.sqrt(d.degree || 0) * 1.5;
 }
 
 function render() {
@@ -483,7 +477,7 @@ function render() {
 
   d3.select('#graph').append('defs').append('marker')
     .attr('id', 'arrow').attr('viewBox', '0 0 10 10')
-    .attr('refX', 14).attr('refY', 5)
+    .attr('refX', 8).attr('refY', 5)
     .attr('markerWidth', 5).attr('markerHeight', 5)
     .attr('orient', 'auto-start-reverse')
     .append('path').attr('d', 'M2 1L8 5L2 9').attr('fill', 'none')
@@ -495,6 +489,12 @@ function render() {
   const maxDegree = Math.max(1, ...nodes.map(n =>
     sizeBy === 'in' ? (adj.inc[n.id] || []).length : (adj.out[n.id] || []).length
   ));
+
+  // Stamp degree onto nodes so nodeRadius can use it
+  nodes.forEach(n => {
+    n.degree = sizeBy === 'in' ? (adj.inc[n.id] || []).length : (adj.out[n.id] || []).length;
+  });
+
   edges.forEach(e => {
     const id = sizeBy === 'in' ? e.target : e.source;
     const degree = sizeBy === 'in' ? (adj.inc[id] || []).length : (adj.out[id] || []).length;
@@ -568,8 +568,30 @@ function render() {
   nodeSel = nodeG;
   sim.on('tick', () => {
     linkSel
-      .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
-      .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+      .attr('x1', d => {
+        const r = nodeRadius(d.source) + 2;
+        const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+        const len = Math.sqrt(dx*dx + dy*dy) || 1;
+        return d.source.x + dx / len * r;
+      })
+      .attr('y1', d => {
+        const r = nodeRadius(d.source) + 2;
+        const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+        const len = Math.sqrt(dx*dx + dy*dy) || 1;
+        return d.source.y + dy / len * r;
+      })
+      .attr('x2', d => {
+        const r = nodeRadius(d.target) + 4;
+        const dx = d.source.x - d.target.x, dy = d.source.y - d.target.y;
+        const len = Math.sqrt(dx*dx + dy*dy) || 1;
+        return d.target.x + dx / len * r;
+      })
+      .attr('y2', d => {
+        const r = nodeRadius(d.target) + 4;
+        const dx = d.source.x - d.target.x, dy = d.source.y - d.target.y;
+        const len = Math.sqrt(dx*dx + dy*dy) || 1;
+        return d.target.y + dy / len * r;
+      });
     nodeG.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
   });
 }
