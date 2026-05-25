@@ -343,12 +343,16 @@ const htmlTemplate = `<!DOCTYPE html>
   .node circle { cursor: pointer; stroke-width: 1.5; transition: r 0.15s; }
   .node circle:hover { stroke-width: 2.5; }
   .node text { pointer-events: none; font-size: 11px; fill: #c8cad4; }
-  .link { stroke-opacity: 0.35; stroke-width: 1; }
-  .link.highlighted { stroke-opacity: 0.9; stroke-width: 2; }
+  .link line { stroke-opacity: 0.5; }
+  .link.highlighted line { stroke-opacity: 0.9; stroke-width: 2 !important; }
+  .link.dimmed line { stroke-opacity: 0.04; }
+  .link text { opacity: 0; transition: opacity 0.15s; }
+  .link.highlighted text { opacity: 1; }
+  .link.dimmed text { opacity: 0; }
+  .edge-label { font-size: 9px; fill: #c8cad4; pointer-events: none; }
   .node.dimmed circle { opacity: 0.15; }
   .node.dimmed text   { opacity: 0.1; }
   .node.text-hidden text { opacity: 0 !important; }
-  .link.dimmed { stroke-opacity: 0.04; }
   #search { background: #1e2436; border: 1px solid #2a2f3d; color: #e2e4ea; padding: 4px 10px; border-radius: 4px; font-size: 12px; width: 160px; }
   #search::placeholder { color: #4a5068; }
   #filter-btn { background: #1e2436; border: 1px solid #2a2f3d; color: #8890a8; padding: 4px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap; }
@@ -397,13 +401,13 @@ const htmlTemplate = `<!DOCTYPE html>
 <script>
 const RAW_NODES = {{.Nodes}};
 const RAW_EDGES = {{.Edges}};
-
+ 
 const color = { internal: '#7c6fe0', external: '#e07c5f', stdlib: '#5f8ea0' };
-
+ 
 let searchTerm = '';
 let activeFilters = new Set();
 let maxDepthFilter = 0;
-
+ 
 // Populate depth dropdown from actual label depths in the data
 (function() {
   const depths = new Set();
@@ -420,7 +424,7 @@ let maxDepthFilter = 0;
     sel.appendChild(opt);
   });
 })();
-
+ 
 function filteredData() {
   const nodeSet = new Set();
   RAW_NODES.forEach(n => {
@@ -441,10 +445,10 @@ function filteredData() {
     .map(e => ({ source: e.source, target: e.target }));
   return { nodes, edges };
 }
-
+ 
 const svgEl = document.getElementById('graph');
 let sim, linkSel, nodeSel;
-
+ 
 function buildAdj(nodes, edges) {
   const out = {}, inc = {};
   nodes.forEach(n => { out[n.id] = []; inc[n.id] = []; });
@@ -456,25 +460,25 @@ function buildAdj(nodes, edges) {
   });
   return { out, inc };
 }
-
+ 
 function nodeRadius(d) {
   const base = 5;
   return base + Math.sqrt(d.methods || 0) * 1.5 + Math.sqrt(d.degree || 0) * 1.5;
 }
-
+ 
 function render() {
   const { nodes, edges } = filteredData();
   document.getElementById('stats').textContent = nodes.length + ' nodes · ' + edges.length + ' edges';
-
+ 
   const W = svgEl.clientWidth || 1200;
   const H = svgEl.clientHeight || 700;
   d3.select('#graph').selectAll('*').remove();
-
+ 
   const g = d3.select('#graph')
     .call(d3.zoom().on('zoom', e => container.attr('transform', e.transform)))
     .append('g');
   const container = g;
-
+ 
   d3.select('#graph').append('defs').append('marker')
     .attr('id', 'arrow').attr('viewBox', '0 0 10 10')
     .attr('refX', 8).attr('refY', 5)
@@ -482,57 +486,46 @@ function render() {
     .attr('orient', 'auto-start-reverse')
     .append('path').attr('d', 'M2 1L8 5L2 9').attr('fill', 'none')
     .attr('stroke', '#4a5068').attr('stroke-width', 1.5);
-
+ 
   const adj = buildAdj(nodes, edges);
-
+ 
   const sizeBy = document.getElementById('size-by').value;
-  const maxDegree = Math.max(1, ...nodes.map(n =>
-    sizeBy === 'in' ? (adj.inc[n.id] || []).length : (adj.out[n.id] || []).length
-  ));
-
-  // Stamp degree onto nodes so nodeRadius can use it
+ 
   nodes.forEach(n => {
     n.degree = sizeBy === 'in' ? (adj.inc[n.id] || []).length : (adj.out[n.id] || []).length;
   });
-
+ 
   edges.forEach(e => {
     const id = sizeBy === 'in' ? e.target : e.source;
-    const degree = sizeBy === 'in' ? (adj.inc[id] || []).length : (adj.out[id] || []).length;
-    e.heat = degree / maxDegree;
+    e.degreeLabel = (sizeBy === 'in' ? (adj.inc[id] || []).length : (adj.out[id] || []).length).toString();
   });
-
-  function edgeColor(heat) {
-    const stops = [
-      [0x4a, 0x50, 0x68],
-      [0xc8, 0xb0, 0x30],
-      [0xe0, 0x72, 0x20],
-      [0xe0, 0x28, 0x28],
-    ];
-    const t = heat * (stops.length - 1);
-    const i = Math.min(Math.floor(t), stops.length - 2);
-    const f = t - i;
-    const a = stops[i], b = stops[i + 1];
-    const r = Math.round(a[0] + (b[0] - a[0]) * f);
-    const g = Math.round(a[1] + (b[1] - a[1]) * f);
-    const bl = Math.round(a[2] + (b[2] - a[2]) * f);
-    return 'rgb(' + r + ',' + g + ',' + bl + ')';
-  }
-
+ 
   const linkDist = +document.getElementById('link-dist').value;
-
+ 
   sim = d3.forceSimulation(nodes)
     .force('link', d3.forceLink(edges).id(d => d.id).distance(linkDist).strength(0.4))
     .force('charge', d3.forceManyBody().strength(-180))
     .force('center', d3.forceCenter(W / 2, H / 2))
     .force('collision', d3.forceCollide(d => nodeRadius(d) + 2));
-
-  linkSel = container.append('g').selectAll('line')
-    .data(edges).join('line')
-    .attr('class', 'link')
-    .attr('stroke-width', 1.5)
-    .attr('stroke', d => edgeColor(d.heat))
+ 
+  linkSel = container.append('g').selectAll('g')
+    .data(edges).join('g')
+    .attr('class', 'link');
+ 
+  const maxDegree = Math.max(1, ...edges.map(e => +e.degreeLabel));
+ 
+  linkSel.append('line')
+    .attr('stroke', '#4a5068')
+    .attr('stroke-width', d => 0.8 + (parseInt(d.degreeLabel) / maxDegree) * 4)
+    .attr('stroke-opacity', 0.5)
     .attr('marker-end', 'url(#arrow)');
-
+ 
+  linkSel.append('text')
+    .attr('class', 'edge-label')
+    .text(d => d.degreeLabel)
+    .attr('text-anchor', 'middle')
+    .attr('dy', -3);
+ 
   const nodeG = container.append('g').selectAll('g')
     .data(nodes).join('g')
     .attr('class', 'node')
@@ -543,59 +536,50 @@ function render() {
     .on('click', (e, d) => showInfo(d, nodes, edges))
     .on('mouseover', (e, d) => highlight(d, nodes, edges, adj))
     .on('mouseout',  () => clearHighlight());
-
+ 
   const maxChurn = Math.max(1, ...nodes.map(n => n.churn || 0));
-
+ 
   nodeG.append('circle')
     .attr('r', d => d.churn ? nodeRadius(d) + (d.churn / maxChurn) * 10 : 0)
     .attr('fill', 'none')
     .attr('stroke', '#e0a020')
     .attr('stroke-width', 1.5)
     .attr('stroke-opacity', d => 0.2 + (d.churn / maxChurn) * 0.7);
-
+ 
   nodeG.append('circle')
     .attr('r', d => nodeRadius(d))
     .attr('fill', d => color[d.kind])
     .attr('stroke', d => d3.color(color[d.kind]).brighter(0.5));
-
+ 
   nodeG.append('text')
     .text(d => d.label)
     .attr('x', d => nodeRadius(d) + 4)
     .attr('y', 4)
     .style('font-size', d => d.kind === 'internal' ? '12px' : '10px')
     .style('opacity', d => d.kind === 'internal' ? 1 : 0.6);
-
+ 
   nodeSel = nodeG;
   sim.on('tick', () => {
-    linkSel
-      .attr('x1', d => {
-        const r = nodeRadius(d.source) + 2;
-        const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
-        const len = Math.sqrt(dx*dx + dy*dy) || 1;
-        return d.source.x + dx / len * r;
-      })
-      .attr('y1', d => {
-        const r = nodeRadius(d.source) + 2;
-        const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
-        const len = Math.sqrt(dx*dx + dy*dy) || 1;
-        return d.source.y + dy / len * r;
-      })
-      .attr('x2', d => {
-        const r = nodeRadius(d.target) + 4;
-        const dx = d.source.x - d.target.x, dy = d.source.y - d.target.y;
-        const len = Math.sqrt(dx*dx + dy*dy) || 1;
-        return d.target.x + dx / len * r;
-      })
-      .attr('y2', d => {
-        const r = nodeRadius(d.target) + 4;
-        const dx = d.source.x - d.target.x, dy = d.source.y - d.target.y;
-        const len = Math.sqrt(dx*dx + dy*dy) || 1;
-        return d.target.y + dy / len * r;
-      });
+    linkSel.each(function(d) {
+      const srcR = nodeRadius(d.source) + 2;
+      const tgtR = nodeRadius(d.target) + 4;
+      const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+      const len = Math.sqrt(dx*dx + dy*dy) || 1;
+      const x1 = d.source.x + dx / len * srcR;
+      const y1 = d.source.y + dy / len * srcR;
+      const x2 = d.target.x - dx / len * tgtR;
+      const y2 = d.target.y - dy / len * tgtR;
+      d3.select(this).select('line')
+        .attr('x1', x1).attr('y1', y1)
+        .attr('x2', x2).attr('y2', y2);
+      d3.select(this).select('text')
+        .attr('x', (x1 + x2) / 2)
+        .attr('y', (y1 + y2) / 2);
+    });
     nodeG.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
   });
 }
-
+ 
 function highlight(d, nodes, edges, adj) {
   const connected = new Set([d.id]);
   edges.forEach(e => {
@@ -617,13 +601,13 @@ function highlight(d, nodes, edges, adj) {
     return sid === d.id || tid === d.id;
   });
 }
-
+ 
 function clearHighlight() {
   if (!nodeSel) return;
   nodeSel.classed('dimmed', false).classed('text-hidden', false);
   linkSel.classed('dimmed', false).classed('highlighted', false);
 }
-
+ 
 function showInfo(d, nodes, edges) {
   const { out, inc } = buildAdj(nodes, edges);
   document.getElementById('info-path').textContent = d.fullPath;
@@ -635,7 +619,7 @@ function showInfo(d, nodes, edges) {
   document.getElementById('info-churn').textContent = d.churn || 0;
   document.getElementById('info').style.display = 'block';
 }
-
+ 
 // --- Filter panel ---
 function buildPrefixTree() {
   const groups = {};
@@ -649,7 +633,7 @@ function buildPrefixTree() {
   });
   return groups;
 }
-
+ 
 function getFullPrefix(relPrefix) {
   for (const n of RAW_NODES) {
     if (n.kind === 'internal' && (n.label === relPrefix || n.label.startsWith(relPrefix + '/'))) {
@@ -659,7 +643,7 @@ function getFullPrefix(relPrefix) {
   }
   return relPrefix;
 }
-
+ 
 function renderFilterPanel() {
   const groups = buildPrefixTree();
   const list = document.getElementById('prefix-list');
@@ -674,14 +658,14 @@ function renderFilterPanel() {
     group.appendChild(label);
     const pills = document.createElement('div');
     pills.className = 'prefix-pills';
-
+ 
     const topPill = document.createElement('span');
     topPill.className = 'pill' + (activeFilters.has(fullTop) ? ' active' : '');
     topPill.textContent = top + '/…';
     topPill.dataset.prefix = fullTop;
     topPill.addEventListener('click', toggleFilter);
     pills.appendChild(topPill);
-
+ 
     [...groups[top]].sort().forEach(sub => {
       const fullSub = getFullPrefix(sub);
       const pill = document.createElement('span');
@@ -691,12 +675,12 @@ function renderFilterPanel() {
       pill.addEventListener('click', toggleFilter);
       pills.appendChild(pill);
     });
-
+ 
     group.appendChild(pills);
     list.appendChild(group);
   });
 }
-
+ 
 function toggleFilter(e) {
   const prefix = e.target.dataset.prefix;
   if (activeFilters.has(prefix)) {
@@ -708,7 +692,7 @@ function toggleFilter(e) {
   }
   render();
 }
-
+ 
 const filterBtn = document.getElementById('filter-btn');
 const filterPanel = document.getElementById('filter-panel');
 filterBtn.addEventListener('click', e => {
@@ -728,7 +712,7 @@ document.getElementById('filter-clear').addEventListener('click', () => {
   render();
 });
 // ---
-
+ 
 document.getElementById('depth-filter').addEventListener('change', e => { maxDepthFilter = +e.target.value; render(); });
 document.getElementById('size-by').addEventListener('change', () => render());
 document.getElementById('link-dist').addEventListener('input', () => {
